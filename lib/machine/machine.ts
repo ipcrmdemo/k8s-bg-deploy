@@ -15,12 +15,26 @@
  */
 
 import {
+    goals,
     SoftwareDeliveryMachine,
-    SoftwareDeliveryMachineConfiguration,
+    SoftwareDeliveryMachineConfiguration, ToDefaultBranch, whenPushSatisfies,
 } from "@atomist/sdm";
 import {
     createSoftwareDeliveryMachine,
 } from "@atomist/sdm-core";
+import {HasDockerfile} from "@atomist/sdm-pack-docker";
+import {k8sSupport} from "@atomist/sdm-pack-k8s";
+import {IsNode} from "@atomist/sdm-pack-node";
+import {IsBlueDeploy, IsGreenDeploy} from "../support/pushTests";
+import {
+    addGoalImplementations,
+    dockerBuildGoal,
+    k8sBlueProd,
+    k8sGreenProd,
+    k8sTrafficUpdateBlue,
+    k8sTrafficUpdateGreen,
+    nodeVersion
+} from "./goals";
 
 /**
  * Initialize an sdm definition, and add functionality to it.
@@ -32,15 +46,47 @@ export function machine(
 ): SoftwareDeliveryMachine {
 
     const sdm = createSoftwareDeliveryMachine({
-        name: "Empty Seed Software Delivery Machine",
+        name: "Example SDM performing K8s Blue/Green Deployments",
         configuration,
     });
 
-    /*
-     * this is a good place to type
-    sdm.
-     * and see what the IDE suggests for after the dot
+    /**
+     * Setup Extension Packs
      */
+    sdm.addExtensionPacks(
+        k8sSupport(),
+    );
 
+    /**
+     * Configure Goals
+     */
+    const buildGoals = goals("build")
+        .plan(nodeVersion)
+        .plan(dockerBuildGoal).after(nodeVersion);
+
+    const k8sBlueGoal = goals("deploy-blue")
+        .plan(k8sBlueProd).after(buildGoals)
+        .plan(k8sTrafficUpdateBlue).after(k8sBlueProd);
+
+    const k8sGreenGoal = goals("deploy-green")
+        .plan(k8sGreenProd).after(buildGoals)
+        .plan(k8sTrafficUpdateGreen).after(k8sGreenProd);
+
+    /**
+     * Define Push Rules
+     */
+    sdm.withPushRules(
+        whenPushSatisfies(HasDockerfile, IsNode)
+            .setGoals(buildGoals),
+        whenPushSatisfies(HasDockerfile, IsNode, ToDefaultBranch, IsBlueDeploy)
+            .setGoals(k8sBlueGoal),
+        whenPushSatisfies(HasDockerfile, IsNode, ToDefaultBranch, IsGreenDeploy)
+            .setGoals(k8sGreenGoal),
+    );
+
+    /**
+     * Add Required Goal Implementations
+     */
+    addGoalImplementations(sdm);
     return sdm;
 }
